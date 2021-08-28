@@ -35,11 +35,19 @@ class Command(BaseCommand):
                 'the auto-reloader and run checks.'
             )
         )
+        parser.add_argument(
+            "--private-key", dest="server_key", help="Server private key path"
+        )
+        parser.add_argument(
+            "--server-credentials", dest="server_crt", help="Server credentials path"
+        )
 
     def handle(self, *args, **options):
         self.address = options['address']
         self.development_mode = options['development_mode']
         self.max_workers = options['max_workers']
+        self.server_key = options["server_key"]
+        self.server_crt = options["server_crt"]
         self.run(**options)
 
     def run(self, **options):
@@ -61,9 +69,18 @@ class Command(BaseCommand):
         server = grpc.server(futures.ThreadPoolExecutor(max_workers=self.max_workers),
                              interceptors=grpc_settings.SERVER_INTERCEPTORS)
         grpc_settings.ROOT_HANDLERS_HOOK(server)
-        server.add_insecure_port(self.address)
+        self.create_channel(server)
         server.start()
         server.wait_for_termination()
+
+    def create_channel(self, server):
+        if not (self.server_crt or self.server_key):
+            server.add_insecure_port(self.address)
+            return
+        server_key = open(self.server_key, 'rb').read()
+        server_crt = open(self.server_crt, 'rb').read()
+        server_credentials = grpc.ssl_server_credentials(((server_key, server_crt),))
+        server.add_secure_port(self.address, server_credentials)
 
     def inner_run(self, *args, **options):
         # If an exception was silenced in ManagementUtility.execute in order
@@ -79,15 +96,15 @@ class Command(BaseCommand):
         self.stdout.write(now)
         quit_command = 'CTRL-BREAK' if sys.platform == 'win32' else 'CONTROL-C'
         self.stdout.write((
-            "Django version %(version)s, using settings %(settings)r\n"
-            "Starting development gRPC server at %(address)s\n"
-            "Quit the server with %(quit_command)s.\n"
-        ) % {
-            "version": self.get_version(),
-            "settings": settings.SETTINGS_MODULE,
-            "address": self.address,
-            "quit_command": quit_command,
-        })
+                              "Django version %(version)s, using settings %(settings)r\n"
+                              "Starting development gRPC server at %(address)s\n"
+                              "Quit the server with %(quit_command)s.\n"
+                          ) % {
+                              "version": self.get_version(),
+                              "settings": settings.SETTINGS_MODULE,
+                              "address": self.address,
+                              "quit_command": quit_command,
+                          })
         try:
             self._serve()
         except OSError as e:
