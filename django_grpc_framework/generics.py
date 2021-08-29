@@ -105,6 +105,7 @@ class GenericService(services.Service):
         return {
             'grpc_request': self.request,
             'grpc_context': self.context,
+            'user': getattr(self.context, 'user', None),
             'service': self,
         }
 

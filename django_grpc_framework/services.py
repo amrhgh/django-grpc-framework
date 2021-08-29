@@ -4,12 +4,49 @@ import grpc
 from django.db.models.query import QuerySet
 
 from django_grpc_framework.signals import grpc_request_started, grpc_request_finished
+from rest_framework import HTTP_HEADER_ENCODING, exceptions
+from rest_framework.exceptions import PermissionDenied
 
 
 class Service:
+    authentication_classes = []
+    permission_classes = []
+
     def __init__(self, **kwargs):
         for key, value in kwargs.items():
             setattr(self, key, value)
+
+    def get_authentication(self):
+        return [auth() for auth in self.authentication_classes]
+
+    def get_permissions(self):
+        return [permission() for permission in self.permission_classes]
+
+    def check_permissions(self):
+        """
+        Check if the request should be permitted.
+        Raises an appropriate exception if the request is not permitted.
+        """
+        for permission in self.get_permissions():
+            if not permission.has_permission(self.context, self):
+                raise PermissionDenied()
+
+    def append_user_request(self, user):
+        setattr(self.context, 'user', user)
+
+    def _authenticate(self):
+        for authenticator in self.get_authentication():
+            try:
+                user_auth_tuple = authenticator.authenticate(request=self)
+            except exceptions.APIException:
+                self.append_user_request(None)
+                return
+
+            if user_auth_tuple is not None:
+                self.append_user_request(user_auth_tuple[0])
+                return
+
+        self.append_user_request(None)
 
     @classmethod
     def as_servicer(cls, **initkwargs):
@@ -33,6 +70,7 @@ class Service:
                     'as the result will be cached and reused between requests.'
                     ' Use `.all()` or call `.get_queryset()` instead.'
                 )
+
             cls.queryset._fetch_all = force_evaluation
 
         class Servicer:
@@ -47,11 +85,15 @@ class Service:
                         self.request = request
                         self.context = context
                         self.action = action
+                        self._authenticate()
+                        self.check_permissions()
                         return getattr(self, action)(request, context)
                     finally:
                         grpc_request_finished.send(sender=handler)
+
                 update_wrapper(handler, getattr(cls, action))
                 return handler
+
         update_wrapper(Servicer, cls, updated=())
         return Servicer()
 
